@@ -1,0 +1,886 @@
+diff --git a/tools/android/ion/Makefile b/tools/android/ion/Makefile
+new file mode 100644
+index 0000000..57d2e98
+--- /dev/null
++++ b/tools/android/ion/Makefile
+@@ -0,0 +1,17 @@ 
++
++CC := $(CROSS_COMPILE)gcc
++
++INCLUDEDIR := -I../../../drivers/staging/android/uapi/
++
++CCFLAGS := $(INCLUDEDIR) -Wall -O2 -g
++
++all: ionapp_export ionapp_import
++
++ionapp_import : ionapp_import.c
++	$(CC) -o ionapp_import.out ionapp_import.c ipcsocket.c ionutils.c $(CCFLAGS)
++
++ionapp_export : ionapp_export.c
++	$(CC) -o ionapp_export.out ionapp_export.c ipcsocket.c ionutils.c $(CCFLAGS)
++
++clean:
++	rm -rf *.o *~ *.out
+diff --git a/tools/android/ion/ionapp_export.c b/tools/android/ion/ionapp_export.c
+new file mode 100644
+index 0000000..29e3419
+--- /dev/null
++++ b/tools/android/ion/ionapp_export.c
+@@ -0,0 +1,152 @@ 
++/*
++ * ionapp_export.c
++ *
++ * It is a user space utility to create and export android
++ * ion memory buffer fd to another process using unix domain socket as IPC.
++ * This acts like a server for ionapp_import(client).
++ * So, this server has to be started first before the client.
++ *
++ * Copyright (C) 2017 Pintu Kumar <pintu.ping@gmail.com>
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <errno.h>
++#include <sys/time.h>
++#include "ionutils.h"
++#include "ipcsocket.h"
++
++
++void print_usage(int argc, char *argv[])
++{
++	printf("********** HEAP ID ***********\n");
++	printf("0: ION_HEAP_TYPE_SYSTEM\n");
++	printf("1: ION_HEAP_TYPE_SYSTEM_CONTIG\n");
++	printf("2: ION_HEAP_TYPE_CARVEOUT\n");
++	printf("3: ION_HEAP_TYPE_CHUNK\n");
++	printf("4: ION_HEAP_TYPE_DMA\n");
++
++	printf("Usage: %s [-h <help>] [-i <heap id>] [-s <size in bytes>]\n",
++		argv[0]);
++}
++
++int main(int argc, char *argv[])
++{
++	int opt, ret, status, heapid;
++	int sockfd, client_fd, shared_fd;
++	unsigned char *map_buf;
++	unsigned long map_len, heap_type, heap_size, flags;
++	struct ion_buffer_info info;
++	struct socket_info skinfo;
++
++	if (argc < 2) {
++		print_usage(argc, argv);
++		return -1;
++	}
++
++	heap_size = 0;
++	flags = 0;
++
++	while ((opt = getopt(argc, argv, "hi:s:")) != -1) {
++		switch (opt) {
++		case 'h':
++			print_usage(argc, argv);
++			exit(0);
++			break;
++		case 'i':
++			heapid = atoi(optarg);
++			switch (heapid) {
++			case 0:
++				heap_type = 1 << ION_HEAP_TYPE_SYSTEM;
++				break;
++			case 1:
++				heap_type = 1 << ION_HEAP_TYPE_SYSTEM_CONTIG;
++				break;
++			case 2:
++				heap_type = 1 << ION_HEAP_TYPE_CARVEOUT;
++				break;
++			case 3:
++				heap_type = 1 << ION_HEAP_TYPE_CHUNK;
++				break;
++			case 4:
++				heap_type = 1 << ION_HEAP_TYPE_DMA;
++				break;
++			default:
++				printf("ERROR: Wrong - heap type\n");
++				exit(1);
++			}
++			break;
++		case 's':
++			heap_size = atoi(optarg);
++			break;
++		default:
++			print_usage(argc, argv);
++			exit(1);
++			break;
++		}
++	}
++
++	if (heap_size <= 0) {
++		printf("heap_size cannot be 0\n");
++		print_usage(argc, argv);
++		exit(1);
++	}
++
++	printf("heap_type: %ld, heap_size: %ld\n", heap_type, heap_size);
++	info.heap_type = heap_type;
++	info.heap_size = heap_size;
++	info.flag_type = flags;
++
++	/* This is server: open the socket connection first */
++	/* Here; 1 indicates server or exporter */
++	status = opensocket(&sockfd, SOCKET_NAME, 1);
++	if (status < 0) {
++		fprintf(stderr, "<%s>: Failed opensocket.\n", __func__);
++		goto err_socket;
++	}
++	skinfo.sockfd = sockfd;
++
++	ret = ion_export_buffer_fd(&info);
++	if (ret < 0) {
++		fprintf(stderr, "FAILED: ion_get_buffer_fd\n");
++		goto err_export;
++	}
++	client_fd = info.ionfd;
++	shared_fd = info.buffd;
++	map_buf = info.buffer;
++	map_len = info.buflen;
++	write_buffer(map_buf, map_len);
++
++	/* share ion buf fd with other user process */
++	printf("Sharing fd: %d, Client fd: %d\n", shared_fd, client_fd);
++	skinfo.datafd = shared_fd;
++	skinfo.buflen = map_len;
++
++	ret = socket_send_fd(&skinfo);
++	if (ret < 0) {
++		fprintf(stderr, "FAILED: socket_send_fd\n");
++		goto err_send;
++	}
++
++err_send:
++err_export:
++	ion_close_buffer_fd(&info);
++
++err_socket:
++	closesocket(sockfd, SOCKET_NAME);
++
++	return 0;
++}
++
+diff --git a/tools/android/ion/ionapp_import.c b/tools/android/ion/ionapp_import.c
+new file mode 100644
+index 0000000..f6c91f9
+--- /dev/null
++++ b/tools/android/ion/ionapp_import.c
+@@ -0,0 +1,87 @@ 
++/*
++ * ionapp_import.c
++ *
++ * It is a user space utility to receive android ion memory buffer fd
++ * over unix domain socket IPC that can be exported by ionapp_export.
++ * This acts like a client for ionapp_export.
++ *
++ * Copyright (C) 2017 Pintu Kumar <pintu.ping@gmail.com>
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <string.h>
++#include "ionutils.h"
++#include "ipcsocket.h"
++
++
++int main(void)
++{
++	int ret, status;
++	int sockfd, shared_fd;
++	unsigned char *map_buf;
++	unsigned long map_len;
++	struct ion_buffer_info info;
++	struct socket_info skinfo;
++
++	/* This is the client part. Here 0 means client or importer */
++	status = opensocket(&sockfd, SOCKET_NAME, 0);
++	if (status < 0) {
++		fprintf(stderr, "No exporter exists...\n");
++		goto err_socket;
++	}
++
++	skinfo.sockfd = sockfd;
++
++	ret = socket_receive_fd(&skinfo);
++	if (ret < 0) {
++		fprintf(stderr, "Failed: socket_receive_fd\n");
++		goto err_recv;
++	}
++
++	shared_fd = skinfo.datafd;
++	printf("Received buffer fd: %d\n", shared_fd);
++	if (shared_fd <= 0) {
++		fprintf(stderr, "ERROR: improper buf fd\n");
++		goto err_fd;
++	}
++
++	memset(&info, 0, sizeof(info));
++	info.buffd = shared_fd;
++	info.buflen = ION_BUFFER_LEN;
++
++	ret = ion_import_buffer_fd(&info);
++	if (ret < 0) {
++		fprintf(stderr, "Failed: ion_use_buffer_fd\n");
++		goto err_import;
++	}
++
++	map_buf = info.buffer;
++	map_len = info.buflen;
++	read_buffer(map_buf, map_len);
++
++	/* Write probably new data to the same buffer again */
++	map_len = ION_BUFFER_LEN;
++	write_buffer(map_buf, map_len);
++
++err_import:
++	ion_close_buffer_fd(&info);
++err_fd:
++err_recv:
++err_socket:
++	closesocket(sockfd, SOCKET_NAME);
++
++	return 0;
++}
++
+diff --git a/tools/android/ion/ionutils.c b/tools/android/ion/ionutils.c
+new file mode 100644
+index 0000000..31d8c74
+--- /dev/null
++++ b/tools/android/ion/ionutils.c
+@@ -0,0 +1,282 @@ 
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <errno.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include "ionutils.h"
++#include "ipcsocket.h"
++
++
++void write_buffer(void *buffer, unsigned long len)
++{
++	int i;
++	unsigned char *ptr = (unsigned char *)buffer;
++
++	if (!ptr) {
++		fprintf(stderr, "<%s>: Invalid buffer...\n", __func__);
++		return;
++	}
++
++	printf("Fill buffer content:\n");
++	memset(ptr, 0xfd, len);
++	for (i = 0; i < len; i++)
++		printf("0x%x ", ptr[i]);
++	printf("\n");
++}
++
++void read_buffer(void *buffer, unsigned long len)
++{
++	int i;
++	unsigned char *ptr = (unsigned char *)buffer;
++
++	if (!ptr) {
++		fprintf(stderr, "<%s>: Invalid buffer...\n", __func__);
++		return;
++	}
++
++	printf("Read buffer content:\n");
++	for (i = 0; i < len; i++)
++		printf("0x%x ", ptr[i]);
++	printf("\n");
++}
++
++int ion_export_buffer_fd(struct ion_buffer_info *ion_info)
++{
++	int ret, ionfd, buffer_fd;
++	unsigned int heap_type, flag_type;
++	unsigned long heap_size, maplen;
++	unsigned char *map_buffer;
++	struct ion_allocation_data alloc_data;
++	struct ion_fd_data fd_data;
++
++
++	if (!ion_info) {
++		fprintf(stderr, "<%s>: Invalid ion info\n", __func__);
++		return -1;
++	}
++
++	/* Create an ION client */
++	ionfd = open(ION_DEVICE, O_RDWR);
++	if (ionfd < 0) {
++		fprintf(stderr, "<%s>: Failed to open ion client: %s\n",
++			__func__, strerror(errno));
++		return -1;
++	}
++
++	heap_type = ion_info->heap_type;
++	heap_size = ion_info->heap_size;
++	flag_type = ion_info->flag_type;
++	alloc_data.len = heap_size;
++	/* Align to PAGE_SIZE 4K */
++	alloc_data.align = 0x1000;
++	alloc_data.heap_id_mask = heap_type;
++	alloc_data.flags = flag_type;
++	alloc_data.handle = 0;
++
++	/* Allocate memory for this ION client as per heap_type */
++	ret = ioctl(ionfd, ION_IOC_ALLOC, &alloc_data);
++	if (ret < 0) {
++		fprintf(stderr, "<%s>: Failed: ION_IOC_ALLOC: %s\n",
++			__func__, strerror(errno));
++		goto err_alloc;
++	}
++
++	/* This will return a valid ion handle */
++	fd_data.handle = alloc_data.handle;
++
++	/* Note: To request for an FD, either use ION_IOC_MAP or SHARE */
++	ret  = ioctl(ionfd, ION_IOC_SHARE, &fd_data);
++	if (ret < 0) {
++		fprintf(stderr, "<%s>: Failed: ION_IOC_SHARE: %s\n",
++			__func__, strerror(errno));
++		goto err_share;
++	}
++
++	/* This will return a valid buffer fd */
++	buffer_fd = fd_data.fd;
++	maplen = alloc_data.len;
++
++	if (buffer_fd <= 0 || maplen <= 0) {
++		fprintf(stderr, "<%s>: Invalid map data, fd: %d, len: %ld\n",
++			__func__, buffer_fd, maplen);
++		goto err_fd_data;
++	}
++
++	/* Create memory mapped buffer for the buffer fd */
++	map_buffer = (unsigned char *)mmap(NULL, maplen, PROT_READ|PROT_WRITE,
++			MAP_SHARED, buffer_fd, 0);
++	if (ion_info->buffer == MAP_FAILED) {
++		fprintf(stderr, "<%s>: Failed: mmap: %s\n",
++			__func__, strerror(errno));
++		goto err_mmap;
++	}
++
++	fd_data.handle = alloc_data.handle;
++
++	ion_info->ionfd = ionfd;
++	ion_info->buffd = buffer_fd;
++	ion_info->buffer = map_buffer;
++	ion_info->buflen = maplen;
++	ion_info->ion_handle.handle = alloc_data.handle;
++
++	return 0;
++
++	munmap(map_buffer, maplen);
++
++err_fd_data:
++err_mmap:
++	/* in case of error: close the buffer fd */
++	if (buffer_fd > 0)
++		close(buffer_fd);
++
++err_share:
++	/* In case of error: release the ION memory */
++	if (alloc_data.handle)
++		ioctl(ionfd, ION_IOC_FREE, &alloc_data.handle);
++
++err_alloc:
++	/* In case of error: close the ion client fd */
++	if (ionfd > 0)
++		close(ionfd);
++
++	return -1;
++}
++
++int ion_import_buffer_fd(struct ion_buffer_info *ion_info)
++{
++	int ret, ionfd, buffd;
++	unsigned char *map_buf;
++	unsigned long map_len;
++	struct ion_fd_data fd_data;
++
++	if (!ion_info) {
++		fprintf(stderr, "<%s>: Invalid ion info\n", __func__);
++		return -1;
++	}
++
++	ionfd = open(ION_DEVICE, O_RDWR);
++	if (ionfd < 0) {
++		fprintf(stderr, "<%s>: Failed to open ion client: %s\n",
++			__func__, strerror(errno));
++		return -1;
++	}
++
++	fd_data.fd = ion_info->buffd;
++
++	ret  = ioctl(ionfd, ION_IOC_IMPORT, &fd_data);
++	if (ret < 0) {
++		fprintf(stderr, "<%s>: Failed: ION_IOC_IMPORT: %s\n",
++			__func__, strerror(errno));
++		goto err_import;
++	}
++
++	map_len = ion_info->buflen;
++	buffd = fd_data.fd;
++
++	if (buffd <= 0 || map_len <= 0) {
++		fprintf(stderr, "<%s>: Invalid map data, fd: %d, len: %ld\n",
++			__func__, buffd, map_len);
++		goto err_fd_data;
++	}
++
++	map_buf = (unsigned char *)mmap(NULL, map_len, PROT_READ|PROT_WRITE,
++			MAP_SHARED, buffd, 0);
++	if (map_buf == MAP_FAILED) {
++		printf("<%s>: Failed - mmap: %s\n",
++			__func__, strerror(errno));
++		goto err_mmap;
++	}
++
++	ion_info->ionfd = ionfd;
++	ion_info->buffd = buffd;
++	ion_info->buffer = map_buf;
++	ion_info->buflen = map_len;
++	ion_info->ion_handle.handle = fd_data.handle;
++
++	return 0;
++
++err_mmap:
++	if (buffd)
++		close(buffd);
++
++err_fd_data:
++err_import:
++	if (ionfd)
++		close(ionfd);
++
++	return -1;
++
++}
++
++void ion_close_buffer_fd(struct ion_buffer_info *ion_info)
++{
++	if (ion_info) {
++		/* unmap the buffer properly in the end */
++		munmap(ion_info->buffer, ion_info->buflen);
++		/* close the buffer fd */
++		if (ion_info->buffd > 0)
++			close(ion_info->buffd);
++		/* release the ION memory */
++		/* importsnt, else it will be memory leak */
++		if (ion_info->ion_handle.handle)
++			ioctl(ion_info->ionfd, ION_IOC_FREE,
++					&ion_info->ion_handle.handle);
++		/* Finally, close the client fd */
++		if (ion_info->ionfd > 0)
++			close(ion_info->ionfd);
++		printf("<%s>: buffer release successfully....\n", __func__);
++	}
++}
++
++int socket_send_fd(struct socket_info *info)
++{
++	int status;
++	int fd, sockfd;
++	struct socketdata skdata;
++
++	if (!info) {
++		fprintf(stderr, "<%s>: Invalid socket info\n", __func__);
++		return -1;
++	}
++
++	sockfd = info->sockfd;
++	fd = info->datafd;
++	memset(&skdata, 0, sizeof(skdata));
++	skdata.data = fd;
++	skdata.len = sizeof(skdata.data);
++	status = sendtosocket(sockfd, &skdata);
++	if (status < 0) {
++		fprintf(stderr, "<%s>: Failed: sendtosocket\n", __func__);
++		return -1;
++	}
++
++	return 0;
++}
++
++int socket_receive_fd(struct socket_info *info)
++{
++	int status;
++	int fd, sockfd;
++	struct socketdata skdata;
++
++	if (!info) {
++		fprintf(stderr, "<%s>: Invalid socket info\n", __func__);
++		return -1;
++	}
++
++	sockfd = info->sockfd;
++	memset(&skdata, 0, sizeof(skdata));
++	status = receivefromsocket(sockfd, &skdata);
++	if (status < 0) {
++		fprintf(stderr, "<%s>: Failed: receivefromsocket\n", __func__);
++		return -1;
++	}
++
++	fd = (int)skdata.data;
++	info->datafd = fd;
++
++	return status;
++}
++
+diff --git a/tools/android/ion/ionutils.h b/tools/android/ion/ionutils.h
+new file mode 100644
+index 0000000..ddd26ef
+--- /dev/null
++++ b/tools/android/ion/ionutils.h
+@@ -0,0 +1,55 @@ 
++#ifndef __ION_UTILS_H
++#define __ION_UTILS_H
++
++#include "ion.h"
++
++#define SOCKET_NAME "ion_socket"
++#define ION_DEVICE "/dev/ion"
++
++#define ION_BUFFER_LEN	32
++
++struct socket_info {
++	int sockfd;
++	int datafd;
++	unsigned long buflen;
++};
++
++struct ion_buffer_info {
++	int ionfd;
++	int buffd;
++	unsigned int heap_type;
++	unsigned int flag_type;
++	unsigned long heap_size;
++	unsigned long buflen;
++	unsigned char *buffer;
++	struct ion_handle_data ion_handle;
++};
++
++
++/* This is used to fill the data into the mapped buffer */
++void write_buffer(void *buffer, unsigned long len);
++
++/* This is used to read the data from the exported buffer */
++void read_buffer(void *buffer, unsigned long len);
++
++/* This is used to create an ION buffer FD for the kernel buffer */
++/* So you can export this same buffer to others in the form of FD */
++int ion_export_buffer_fd(struct ion_buffer_info *ion_info);
++
++/* This is used to retrive an exported FD.
++ * So we point to same buffer without making a copy. Hence zero-copy.
++ */
++int ion_import_buffer_fd(struct ion_buffer_info *ion_info);
++
++/* This is used to close all references for the ION client */
++void ion_close_buffer_fd(struct ion_buffer_info *ion_info);
++
++/* This is used to send FD to another process using socket IPC */
++int socket_send_fd(struct socket_info *skinfo);
++
++/* This is used to receive FD from another process using socket IPC */
++int socket_receive_fd(struct socket_info *skinfo);
++
++
++#endif
++
+diff --git a/tools/android/ion/ipcsocket.c b/tools/android/ion/ipcsocket.c
+new file mode 100644
+index 0000000..4074aca
+--- /dev/null
++++ b/tools/android/ion/ipcsocket.c
+@@ -0,0 +1,224 @@ 
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <sys/un.h>
++#include <errno.h>
++
++#include "ipcsocket.h"
++
++
++int opensocket(int *sockfd, const char *name, int connecttype)
++{
++	int ret, temp = 1;
++
++	if (!name || strlen(name) > MAX_SOCK_NAME_LEN) {
++		fprintf(stderr, "<%s>: Invalid socket name.\n", __func__);
++		return -1;
++	}
++
++	ret = socket(PF_LOCAL, SOCK_STREAM, 0);
++	if (ret < 0) {
++		fprintf(stderr, "<%s>: Failed socket: <%s>\n",
++			__func__, strerror(errno));
++		return ret;
++	}
++
++	*sockfd = ret;
++	if (setsockopt(*sockfd, SOL_SOCKET, SO_REUSEADDR,
++		(char *)&temp, sizeof(int)) < 0) {
++		fprintf(stderr, "<%s>: Failed setsockopt: <%s>\n",
++		__func__, strerror(errno));
++		goto err;
++	}
++
++	sprintf(sock_name, "/tmp/%s", name);
++
++	if (connecttype == 1) {
++		struct sockaddr_un skaddr;
++		int clientfd;
++		socklen_t sklen;
++
++		unlink(sock_name);
++		memset(&skaddr, 0, sizeof(skaddr));
++		skaddr.sun_family = AF_LOCAL;
++		strcpy(skaddr.sun_path, sock_name);
++
++		ret = bind(*sockfd, (struct sockaddr *)&skaddr,
++			SUN_LEN(&skaddr));
++		if (ret < 0) {
++			fprintf(stderr, "<%s>: Failed bind: <%s>\n",
++			__func__, strerror(errno));
++			goto err;
++		}
++
++		ret = listen(*sockfd, 5);
++		if (ret < 0) {
++			fprintf(stderr, "<%s>: Failed listen: <%s>\n",
++			__func__, strerror(errno));
++			goto err;
++		}
++
++		memset(&skaddr, 0, sizeof(skaddr));
++		sklen = sizeof(skaddr);
++
++		ret = accept(*sockfd, (struct sockaddr *)&skaddr,
++			(socklen_t *)&sklen);
++		if (ret < 0) {
++			fprintf(stderr, "<%s>: Failed accept: <%s>\n",
++			__func__, strerror(errno));
++			goto err;
++		}
++
++		clientfd = ret;
++		*sockfd = clientfd;
++	} else {
++		struct sockaddr_un skaddr;
++
++		memset(&skaddr, 0, sizeof(skaddr));
++		skaddr.sun_family = AF_LOCAL;
++		strcpy(skaddr.sun_path, sock_name);
++
++		ret = connect(*sockfd, (struct sockaddr *)&skaddr,
++			SUN_LEN(&skaddr));
++		if (ret < 0) {
++			fprintf(stderr, "<%s>: Failed connect: <%s>\n",
++			__func__, strerror(errno));
++			goto err;
++		}
++	}
++
++	return 0;
++
++err:
++	close(*sockfd);
++
++	return ret;
++}
++
++int sendtosocket(int sockfd, struct socketdata *skdata)
++{
++	int ret, buffd;
++	unsigned int len;
++	char cmsg_b[CMSG_SPACE(sizeof(int))];
++	struct cmsghdr *cmsg;
++	struct msghdr msgh;
++	struct iovec iov;
++	struct timeval timeout;
++	fd_set selFDs;
++
++	if (!skdata) {
++		fprintf(stderr, "<%s>: socketdata is NULL\n", __func__);
++		return -1;
++	}
++
++	FD_ZERO(&selFDs);
++	FD_SET(0, &selFDs);
++	FD_SET(sockfd, &selFDs);
++	timeout.tv_sec = 20;
++	timeout.tv_usec = 0;
++
++	ret = select(sockfd+1, NULL, &selFDs, NULL, &timeout);
++	if (ret < 0) {
++		fprintf(stderr, "<%s>: Failed select: <%s>\n",
++		__func__, strerror(errno));
++		return -1;
++	}
++
++	if (FD_ISSET(sockfd, &selFDs)) {
++		buffd = skdata->data;
++		len = skdata->len;
++		memset(&msgh, 0, sizeof(msgh));
++		msgh.msg_control = &cmsg_b;
++		msgh.msg_controllen = CMSG_LEN(len);
++		iov.iov_base = "OK";
++		iov.iov_len = 2;
++		msgh.msg_iov = &iov;
++		msgh.msg_iovlen = 1;
++		cmsg = CMSG_FIRSTHDR(&msgh);
++		cmsg->cmsg_level = SOL_SOCKET;
++		cmsg->cmsg_type = SCM_RIGHTS;
++		cmsg->cmsg_len = CMSG_LEN(len);
++		memcpy(CMSG_DATA(cmsg), &buffd, len);
++
++		ret = sendmsg(sockfd, &msgh, MSG_DONTWAIT);
++		if (ret < 0) {
++			fprintf(stderr, "<%s>: Failed sendmsg: <%s>\n",
++			__func__, strerror(errno));
++			return -1;
++		}
++	}
++
++	return 0;
++}
++
++int receivefromsocket(int sockfd, struct socketdata *skdata)
++{
++	int ret, buffd;
++	unsigned int len = 0;
++	char cmsg_b[CMSG_SPACE(sizeof(int))];
++	struct cmsghdr *cmsg;
++	struct msghdr msgh;
++	struct iovec iov;
++	fd_set recvFDs;
++	char data[32];
++
++	if (!skdata) {
++		fprintf(stderr, "<%s>: socketdata is NULL\n", __func__);
++		return -1;
++	}
++
++	FD_ZERO(&recvFDs);
++	FD_SET(0, &recvFDs);
++	FD_SET(sockfd, &recvFDs);
++
++	ret = select(sockfd+1, &recvFDs, NULL, NULL, NULL);
++	if (ret < 0) {
++		fprintf(stderr, "<%s>: Failed select: <%s>\n",
++		__func__, strerror(errno));
++		return -1;
++	}
++
++	if (FD_ISSET(sockfd, &recvFDs)) {
++		len = sizeof(buffd);
++		memset(&msgh, 0, sizeof(msgh));
++		msgh.msg_control = &cmsg_b;
++		msgh.msg_controllen = CMSG_LEN(len);
++		iov.iov_base = data;
++		iov.iov_len = sizeof(data)-1;
++		msgh.msg_iov = &iov;
++		msgh.msg_iovlen = 1;
++		cmsg = CMSG_FIRSTHDR(&msgh);
++		cmsg->cmsg_level = SOL_SOCKET;
++		cmsg->cmsg_type = SCM_RIGHTS;
++		cmsg->cmsg_len = CMSG_LEN(len);
++
++		ret = recvmsg(sockfd, &msgh, MSG_DONTWAIT);
++		if (ret < 0) {
++			fprintf(stderr, "<%s>: Failed recvmsg: <%s>\n",
++			__func__, strerror(errno));
++			return -1;
++		}
++
++		memcpy(&buffd, CMSG_DATA(cmsg), len);
++		skdata->data = buffd;
++		skdata->len = len;
++	}
++	return 0;
++}
++
++int closesocket(int sockfd, char *name)
++{
++	char sockname[MAX_SOCK_NAME_LEN];
++
++	close(sockfd);
++	sprintf(sockname, "/tmp/%s", name);
++	unlink(sockname);
++	shutdown(sockfd, 2);
++
++	return 0;
++}
++
+diff --git a/tools/android/ion/ipcsocket.h b/tools/android/ion/ipcsocket.h
+new file mode 100644
+index 0000000..1170695
+--- /dev/null
++++ b/tools/android/ion/ipcsocket.h
+@@ -0,0 +1,27 @@ 
++
++#ifndef _IPCSOCKET_H
++#define _IPCSOCKET_H
++
++
++#define MAX_SOCK_NAME_LEN	64
++
++char sock_name[MAX_SOCK_NAME_LEN];
++
++/* This structure is responsible for holding the IPC data
++ * data: hold the buffer fd
++ * len: just the length of 32-bit integer fd
++ */
++struct socketdata {
++	int data;
++	unsigned int len;
++};
++
++
++int opensocket(int *sockfd, const char *name, int connecttype);
++int sendtosocket(int sockfd, struct socketdata *data);
++int receivefromsocket(int sockfd, struct socketdata *data);
++int closesocket(int sockfd, char *name);
++
++
++#endif
++
