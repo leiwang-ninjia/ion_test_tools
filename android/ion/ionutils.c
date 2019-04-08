@@ -8,7 +8,6 @@
 #include "ionutils.h"
 #include "ipcsocket.h"
 
-
 void write_buffer(void *buffer, unsigned long len)
 {
 	int i;
@@ -51,7 +50,6 @@ int ion_export_buffer_fd(struct ion_buffer_info *ion_info)
 	struct ion_allocation_data alloc_data;
 	/* struct ion_fd_data fd_data; */
 
-
 	if (!ion_info) {
 		fprintf(stderr, "<%s>: Invalid ion info\n", __func__);
 		return -1;
@@ -78,8 +76,8 @@ int ion_export_buffer_fd(struct ion_buffer_info *ion_info)
 	/* Allocate memory for this ION client as per heap_type */
 	ret = ioctl(ionfd, ION_IOC_ALLOC, &alloc_data);
 	if (ret < 0) {
-		fprintf(stderr, "<%s>: Failed: ION_IOC_ALLOC: %s\n",
-			__func__, strerror(errno));
+		fprintf(stderr, "<%s>: Failed: ION_IOC_ALLOC: %s\n", __func__,
+			strerror(errno));
 		goto err_alloc;
 	}
 
@@ -105,11 +103,11 @@ int ion_export_buffer_fd(struct ion_buffer_info *ion_info)
 	}
 
 	/* Create memory mapped buffer for the buffer fd */
-	map_buffer = (unsigned char *)mmap(NULL, maplen, PROT_READ|PROT_WRITE,
-			MAP_SHARED, buffer_fd, 0);
+	map_buffer = (unsigned char *)mmap(NULL, maplen, PROT_READ | PROT_WRITE,
+					   MAP_SHARED, buffer_fd, 0);
 	if (ion_info->buffer == MAP_FAILED) {
-		fprintf(stderr, "<%s>: Failed: mmap: %s\n",
-			__func__, strerror(errno));
+		fprintf(stderr, "<%s>: Failed: mmap: %s\n", __func__,
+			strerror(errno));
 		goto err_mmap;
 	}
 
@@ -181,11 +179,10 @@ int ion_import_buffer_fd(struct ion_buffer_info *ion_info)
 		goto err_fd_data;
 	}
 
-	map_buf = (unsigned char *)mmap(NULL, map_len, PROT_READ|PROT_WRITE,
-			MAP_SHARED, buffd, 0);
+	map_buf = (unsigned char *)mmap(NULL, map_len, PROT_READ | PROT_WRITE,
+					MAP_SHARED, buffd, 0);
 	if (map_buf == MAP_FAILED) {
-		printf("<%s>: Failed - mmap: %s\n",
-			__func__, strerror(errno));
+		printf("<%s>: Failed - mmap: %s\n", __func__, strerror(errno));
 		goto err_mmap;
 	}
 
@@ -207,7 +204,6 @@ err_import:
 		close(ionfd);
 
 	return -1;
-
 }
 
 void ion_close_buffer_fd(struct ion_buffer_info *ion_info)
@@ -220,7 +216,7 @@ void ion_close_buffer_fd(struct ion_buffer_info *ion_info)
 			close(ion_info->buffd);
 		/* release the ION memory */
 		/* importsnt, else it will be memory leak */
-    // no need to free in new interface
+		// no need to free in new interface
 		/* if (ion_info->ion_handle.handle) */
 		/* 	ioctl(ion_info->ionfd, ION_IOC_FREE, */
 		/* 			&ion_info->ion_handle.handle); */
@@ -280,4 +276,3 @@ int socket_receive_fd(struct socket_info *info)
 
 	return status;
 }
-

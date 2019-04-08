@@ -6,7 +6,7 @@
 #define SOCKET_NAME "ion_socket"
 #define ION_DEVICE "/dev/ion"
 
-#define ION_BUFFER_LEN	32
+#define ION_BUFFER_LEN 32
 
 struct socket_info {
 	int sockfd;
@@ -24,7 +24,6 @@ struct ion_buffer_info {
 	unsigned char *buffer;
 	/* struct ion_handle_data ion_handle; */
 };
-
 
 /* This is used to fill the data into the mapped buffer */
 void write_buffer(void *buffer, unsigned long len);
@@ -50,6 +49,4 @@ int socket_send_fd(struct socket_info *skinfo);
 /* This is used to receive FD from another process using socket IPC */
 int socket_receive_fd(struct socket_info *skinfo);
 
-
 #endif
-

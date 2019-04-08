@@ -25,7 +25,6 @@
 #include "ionutils.h"
 #include "ipcsocket.h"
 
-
 int main(void)
 {
 	int ret, status;
@@ -84,4 +83,3 @@ err_socket:
 
 	return 0;
 }
-

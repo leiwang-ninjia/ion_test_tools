@@ -10,7 +10,6 @@
 
 #include "ipcsocket.h"
 
-
 int opensocket(int *sockfd, const char *name, int connecttype)
 {
 	int ret, temp = 1;
@@ -22,16 +21,16 @@ int opensocket(int *sockfd, const char *name, int connecttype)
 
 	ret = socket(PF_LOCAL, SOCK_STREAM, 0);
 	if (ret < 0) {
-		fprintf(stderr, "<%s>: Failed socket: <%s>\n",
-			__func__, strerror(errno));
+		fprintf(stderr, "<%s>: Failed socket: <%s>\n", __func__,
+			strerror(errno));
 		return ret;
 	}
 
 	*sockfd = ret;
-	if (setsockopt(*sockfd, SOL_SOCKET, SO_REUSEADDR,
-		(char *)&temp, sizeof(int)) < 0) {
-		fprintf(stderr, "<%s>: Failed setsockopt: <%s>\n",
-		__func__, strerror(errno));
+	if (setsockopt(*sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&temp,
+		       sizeof(int)) < 0) {
+		fprintf(stderr, "<%s>: Failed setsockopt: <%s>\n", __func__,
+			strerror(errno));
 		goto err;
 	}
 
@@ -48,17 +47,17 @@ int opensocket(int *sockfd, const char *name, int connecttype)
 		strcpy(skaddr.sun_path, sock_name);
 
 		ret = bind(*sockfd, (struct sockaddr *)&skaddr,
-			SUN_LEN(&skaddr));
+			   SUN_LEN(&skaddr));
 		if (ret < 0) {
-			fprintf(stderr, "<%s>: Failed bind: <%s>\n",
-			__func__, strerror(errno));
+			fprintf(stderr, "<%s>: Failed bind: <%s>\n", __func__,
+				strerror(errno));
 			goto err;
 		}
 
 		ret = listen(*sockfd, 5);
 		if (ret < 0) {
-			fprintf(stderr, "<%s>: Failed listen: <%s>\n",
-			__func__, strerror(errno));
+			fprintf(stderr, "<%s>: Failed listen: <%s>\n", __func__,
+				strerror(errno));
 			goto err;
 		}
 
@@ -66,10 +65,10 @@ int opensocket(int *sockfd, const char *name, int connecttype)
 		sklen = sizeof(skaddr);
 
 		ret = accept(*sockfd, (struct sockaddr *)&skaddr,
-			(socklen_t *)&sklen);
+			     (socklen_t *)&sklen);
 		if (ret < 0) {
-			fprintf(stderr, "<%s>: Failed accept: <%s>\n",
-			__func__, strerror(errno));
+			fprintf(stderr, "<%s>: Failed accept: <%s>\n", __func__,
+				strerror(errno));
 			goto err;
 		}
 
@@ -83,10 +82,10 @@ int opensocket(int *sockfd, const char *name, int connecttype)
 		strcpy(skaddr.sun_path, sock_name);
 
 		ret = connect(*sockfd, (struct sockaddr *)&skaddr,
-			SUN_LEN(&skaddr));
+			      SUN_LEN(&skaddr));
 		if (ret < 0) {
 			fprintf(stderr, "<%s>: Failed connect: <%s>\n",
-			__func__, strerror(errno));
+				__func__, strerror(errno));
 			goto err;
 		}
 	}
@@ -121,10 +120,10 @@ int sendtosocket(int sockfd, struct socketdata *skdata)
 	timeout.tv_sec = 20;
 	timeout.tv_usec = 0;
 
-	ret = select(sockfd+1, NULL, &selFDs, NULL, &timeout);
+	ret = select(sockfd + 1, NULL, &selFDs, NULL, &timeout);
 	if (ret < 0) {
-		fprintf(stderr, "<%s>: Failed select: <%s>\n",
-		__func__, strerror(errno));
+		fprintf(stderr, "<%s>: Failed select: <%s>\n", __func__,
+			strerror(errno));
 		return -1;
 	}
 
@@ -147,7 +146,7 @@ int sendtosocket(int sockfd, struct socketdata *skdata)
 		ret = sendmsg(sockfd, &msgh, MSG_DONTWAIT);
 		if (ret < 0) {
 			fprintf(stderr, "<%s>: Failed sendmsg: <%s>\n",
-			__func__, strerror(errno));
+				__func__, strerror(errno));
 			return -1;
 		}
 	}
@@ -175,10 +174,10 @@ int receivefromsocket(int sockfd, struct socketdata *skdata)
 	FD_SET(0, &recvFDs);
 	FD_SET(sockfd, &recvFDs);
 
-	ret = select(sockfd+1, &recvFDs, NULL, NULL, NULL);
+	ret = select(sockfd + 1, &recvFDs, NULL, NULL, NULL);
 	if (ret < 0) {
-		fprintf(stderr, "<%s>: Failed select: <%s>\n",
-		__func__, strerror(errno));
+		fprintf(stderr, "<%s>: Failed select: <%s>\n", __func__,
+			strerror(errno));
 		return -1;
 	}
 
@@ -188,7 +187,7 @@ int receivefromsocket(int sockfd, struct socketdata *skdata)
 		msgh.msg_control = &cmsg_b;
 		msgh.msg_controllen = CMSG_LEN(len);
 		iov.iov_base = data;
-		iov.iov_len = sizeof(data)-1;
+		iov.iov_len = sizeof(data) - 1;
 		msgh.msg_iov = &iov;
 		msgh.msg_iovlen = 1;
 		cmsg = CMSG_FIRSTHDR(&msgh);
@@ -199,7 +198,7 @@ int receivefromsocket(int sockfd, struct socketdata *skdata)
 		ret = recvmsg(sockfd, &msgh, MSG_DONTWAIT);
 		if (ret < 0) {
 			fprintf(stderr, "<%s>: Failed recvmsg: <%s>\n",
-			__func__, strerror(errno));
+				__func__, strerror(errno));
 			return -1;
 		}
 
@@ -221,4 +220,3 @@ int closesocket(int sockfd, char *name)
 
 	return 0;
 }
-
